@@ -23,10 +23,20 @@ async function getAccounts() {
   return snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
-async function getSubsStats(trackingLink) {
+async function getSubsStats(trackingLink, accountId) {
   const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const sevenDaysAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+  // Récupère le dernier recap pour avoir l'heure de référence
+  const lastSnap = await db.collection('instagram_daily')
+    .where('account_id', '==', accountId)
+    .orderBy('date', 'desc')
+    .limit(1)
+    .get();
+
+  const lastFilledAt = !lastSnap.empty
+    ? new Date(lastSnap.docs[0].data().filled_at)
+    : new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
   const snap = await db.collection('subscribers').get();
   const subs = snap.docs.map(d => d.data()).filter(s => {
@@ -37,7 +47,7 @@ async function getSubsStats(trackingLink) {
 
   const todaySubs = subs.filter(s => {
     const d = new Date(s.joined_at);
-    return d >= today;
+    return d >= lastFilledAt && d <= now;
   }).length;
 
   const sevenDaysSubs = subs.filter(s => {
@@ -101,17 +111,15 @@ async function sendDailyRecap() {
   const channel = await client.channels.fetch(DAILY_CHANNEL_ID);
   const today = new Date().toLocaleDateString('fr-FR');
 
-  // Groupe par VA
   const byVA = {};
   accounts.forEach(acc => {
     if (!byVA[acc.va_name]) byVA[acc.va_name] = [];
     byVA[acc.va_name].push(acc);
   });
 
-  // Crée un thread par VA
   for (const [vaName, accs] of Object.entries(byVA)) {
     const msg = await channel.send({
-      content: `📋 **Recap du ${today}** — @${vaName.toLowerCase()}, remplis tes stats !`
+      content: `📋 **Recap du ${today}** — remplis tes stats !`
     });
 
     const thread = await msg.startThread({
@@ -119,7 +127,6 @@ async function sendDailyRecap() {
       autoArchiveDuration: 1440
     });
 
-    // Demande qui es-tu
     const vaNames = Object.keys(byVA);
     const selectMenu = new StringSelectMenuBuilder()
       .setCustomId(`select_va_${thread.id}`)
@@ -139,7 +146,7 @@ async function sendDailyRecap() {
 function scheduleDailyRecap() {
   const now = new Date();
   const next16h = new Date(now);
-  next16h.setHours(14, 0, 0, 0); // 14h UTC = 16h France
+  next16h.setHours(14, 0, 0, 0);
   if (next16h <= now) next16h.setDate(next16h.getDate() + 1);
   const delay = next16h - now;
   console.log(`⏰ Prochain recap dans ${Math.round(delay / 60000)} minutes`);
@@ -168,7 +175,6 @@ client.on('interactionCreate', async (interaction) => {
 
     await interaction.update({ content: `✅ Identifié comme **${selectedVA}** ! Remplis maintenant tes comptes :`, components: [] });
 
-    // Envoie un bouton par compte
     for (const acc of vaAccounts) {
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -237,7 +243,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // Subs Telegram
-    const subs = await getSubsStats(acc.tracking_link);
+    const subs = await getSubsStats(acc.tracking_link, accountId);
 
     // Sauvegarde dans Firebase
     const today = new Date().toISOString().split('T')[0];
@@ -259,11 +265,10 @@ client.on('interactionCreate', async (interaction) => {
     const gainText = followerGain >= 0 ? `+${followerGain}` : `${followerGain}`;
 
     await interaction.reply({
-      content: `${statusEmoji} **@${acc.insta_name}** enregistré !\n👥 Abonnés : **${followers.toLocaleString()}** (${gainText} aujourd'hui)\n📩 Subs Telegram aujourd'hui : **${subs.today}** | 7j : **${subs.sevenDays}** | Total : **${subs.total}**`,
+      content: `${statusEmoji} **@${acc.insta_name}** enregistré !\n👥 Abonnés : **${followers.toLocaleString()}** (${gainText} aujourd'hui)\n📩 Subs Telegram depuis dernier recap : **${subs.today}** | 7j : **${subs.sevenDays}** | Total : **${subs.total}**`,
       ephemeral: false
     });
 
-    // Vérifie si tous les comptes du VA sont remplis et envoie récap dans le thread
     await checkAndSendVARecap(interaction, acc.va_name, today);
     return;
   }
@@ -397,12 +402,10 @@ async function checkAndSendVARecap(interaction, vaName, today) {
     const gainText = f.follower_gain >= 0 ? `+${f.follower_gain}` : `${f.follower_gain}`;
     recapText += `${statusEmoji} **@${f.insta_name}**\n`;
     recapText += `  👥 Abonnés : ${f.followers.toLocaleString()} (${gainText})\n`;
-    recapText += `  📩 Subs Telegram : ${f.subs_today} auj | ${f.subs_7days} (7j) | ${f.subs_total} total\n\n`;
+    recapText += `  📩 Subs TG depuis dernier recap : ${f.subs_today} | 7j : ${f.subs_7days} | Total : ${f.subs_total}\n\n`;
   });
 
   await interaction.channel.send({ content: recapText });
-
-  // Envoie aussi dans le salon CEO
   await sendCEORecap(today);
 }
 
@@ -413,7 +416,7 @@ async function sendCEORecap(today) {
     .where('date', '==', today)
     .get();
 
-  if (filledSnap.size < accounts.length) return; // Attend que tout le monde ait rempli
+  if (filledSnap.size < accounts.length) return;
 
   const filled = filledSnap.docs.map(d => d.data());
   const byVA = {};
@@ -426,26 +429,36 @@ async function sendCEORecap(today) {
   const recapChannel = await client.channels.fetch(RECAP_CHANNEL_ID);
 
   let recapText = `📊 **Recap complet du ${dateStr}**\n\n`;
-
   let totalSubsToday = 0;
   let totalSubs7days = 0;
 
-  Object.entries(byVA).forEach(([va, accs]) => {
-    const vaSubsToday = accs.reduce((acc, a) => acc + a.subs_today, 0);
-    const vaSubs7days = accs.reduce((acc, a) => acc + a.subs_7days, 0);
-    totalSubsToday += vaSubsToday;
-    totalSubs7days += vaSubs7days;
+  // Leaderboard
+  const vaStats = Object.entries(byVA).map(([va, accs]) => ({
+    va,
+    subsToday: accs.reduce((acc, a) => acc + a.subs_today, 0),
+    subs7days: accs.reduce((acc, a) => acc + a.subs_7days, 0),
+    accs
+  })).sort((a, b) => b.subs7days - a.subs7days);
 
+  vaStats.forEach(({ va, subsToday, subs7days, accs }) => {
+    totalSubsToday += subsToday;
+    totalSubs7days += subs7days;
     recapText += `👤 **${va}**\n`;
     accs.forEach(f => {
       const statusEmoji = f.active ? '✅' : '❌';
       const gainText = f.follower_gain >= 0 ? `+${f.follower_gain}` : `${f.follower_gain}`;
-      recapText += `  ${statusEmoji} @${f.insta_name} — ${f.followers.toLocaleString()} abonnés (${gainText}) | Subs TG : ${f.subs_today} auj\n`;
+      recapText += `  ${statusEmoji} @${f.insta_name} — ${f.followers.toLocaleString()} abonnés (${gainText}) | Subs TG : ${f.subs_today}\n`;
     });
-    recapText += `  📩 Total subs TG : **${vaSubsToday}** aujourd'hui | **${vaSubs7days}** (7j)\n\n`;
+    recapText += `  📩 Total : **${subsToday}** depuis dernier recap | **${subs7days}** (7j)\n\n`;
   });
 
-  recapText += `---\n🏆 **Total global** : ${totalSubsToday} subs aujourd'hui | ${totalSubs7days} (7j)`;
+  recapText += `---\n🏆 **Leaderboard 7j**\n`;
+  vaStats.forEach((v, i) => {
+    const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
+    recapText += `${medal} **${v.va}** — ${v.subs7days} subs\n`;
+  });
+
+  recapText += `\n---\n📈 **Total global** : ${totalSubsToday} subs depuis dernier recap | ${totalSubs7days} (7j)`;
 
   await recapChannel.send({ content: recapText });
 }
