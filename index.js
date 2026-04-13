@@ -20,106 +20,124 @@ const DAILY_CHANNEL_ID      = '1492880546785660969';
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 async function getAccounts() {
-  const snap = await db.collection('instagram_accounts').get();
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  try {
+    const snap = await db.collection('instagram_accounts').get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  } catch (err) {
+    console.error('❌ Erreur getAccounts:', err.message || err);
+    return [];
+  }
 }
 
 async function getSubsStats(trackingLink, accountId) {
-  const now = new Date();
-  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  try {
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-  const lastSnap = await db.collection('instagram_daily')
-    .where('account_id', '==', accountId)
-    .orderBy('date', 'desc')
-    .limit(1)
-    .get();
+    const lastSnap = await db.collection('instagram_daily')
+      .where('account_id', '==', accountId)
+      .orderBy('date', 'desc')
+      .limit(1)
+      .get();
 
-  const lastFilledAt = !lastSnap.empty
-    ? new Date(lastSnap.docs[0].data().filled_at)
-    : new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const lastFilledAt = !lastSnap.empty
+      ? new Date(lastSnap.docs[0].data().filled_at)
+      : new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
-  const snap = await db.collection('subscribers').get();
-  const subs = snap.docs.map(d => d.data()).filter(s => {
-    const src  = (s.source || '').toLowerCase().trim();
-    const link = (trackingLink || '').toLowerCase().trim();
-    return src === link;
-  });
+    const snap = await db.collection('subscribers').get();
+    const subs = snap.docs.map(d => d.data()).filter(s => {
+      const src  = (s.source || '').toLowerCase().trim();
+      const link = (trackingLink || '').toLowerCase().trim();
+      return src === link;
+    });
 
-  const todaySubs     = subs.filter(s => { const d = new Date(s.joined_at); return d >= lastFilledAt && d <= now; }).length;
-  const sevenDaysSubs = subs.filter(s => new Date(s.joined_at) >= sevenDaysAgo).length;
+    const todaySubs     = subs.filter(s => { const d = new Date(s.joined_at); return d >= lastFilledAt && d <= now; }).length;
+    const sevenDaysSubs = subs.filter(s => new Date(s.joined_at) >= sevenDaysAgo).length;
 
-  return { today: todaySubs, sevenDays: sevenDaysSubs, total: subs.length };
+    return { today: todaySubs, sevenDays: sevenDaysSubs, total: subs.length };
+  } catch (err) {
+    console.error('❌ Erreur getSubsStats:', err.message || err);
+    return { today: 0, sevenDays: 0, total: 0 };
+  }
 }
 
 async function refreshManagementMessage(channel) {
-  const accounts = await getAccounts();
-  const messages  = await channel.messages.fetch({ limit: 10 });
-  const botMessages = messages.filter(m => m.author.id === client.user.id && !m.hasThread);
-  for (const msg of botMessages.values()) await msg.delete().catch(() => {});
+  try {
+    const accounts = await getAccounts();
+    const messages  = await channel.messages.fetch({ limit: 10 });
+    const botMessages = messages.filter(m => m.author.id === client.user.id && !m.hasThread);
+    for (const msg of botMessages.values()) await msg.delete().catch(() => {});
 
-  const byVA = {};
-  accounts.forEach(acc => {
-    if (!byVA[acc.va_name]) byVA[acc.va_name] = [];
-    byVA[acc.va_name].push(acc);
-  });
-
-  const embed = new EmbedBuilder()
-    .setTitle('📱 Gestion des comptes Instagram')
-    .setColor('#a855f7')
-    .setDescription(accounts.length === 0 ? 'Aucun compte enregistré.' : null)
-    .setFooter({ text: `${accounts.length} compte(s) enregistré(s)` })
-    .setTimestamp();
-
-  if (accounts.length > 0) {
-    Object.entries(byVA).forEach(([va, accs]) => {
-      embed.addFields({
-        name: `👤 ${va}`,
-        value: accs.map(a => `• **@${a.insta_name}** — Lien tracking: \`${a.tracking_link}\``).join('\n'),
-        inline: false
-      });
+    const byVA = {};
+    accounts.forEach(acc => {
+      if (!byVA[acc.va_name]) byVA[acc.va_name] = [];
+      byVA[acc.va_name].push(acc);
     });
+
+    const embed = new EmbedBuilder()
+      .setTitle('📱 Gestion des comptes Instagram')
+      .setColor('#a855f7')
+      .setDescription(accounts.length === 0 ? 'Aucun compte enregistré.' : null)
+      .setFooter({ text: `${accounts.length} compte(s) enregistré(s)` })
+      .setTimestamp();
+
+    if (accounts.length > 0) {
+      Object.entries(byVA).forEach(([va, accs]) => {
+        embed.addFields({
+          name: `👤 ${va}`,
+          value: accs.map(a => `• **@${a.insta_name}** — Lien tracking: \`${a.tracking_link}\``).join('\n'),
+          inline: false
+        });
+      });
+    }
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('add_account').setLabel('➕ Ajouter un compte').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('remove_account').setLabel('🗑️ Supprimer un compte').setStyle(ButtonStyle.Danger)
+    );
+
+    await channel.send({ embeds: [embed], components: [row] });
+  } catch (err) {
+    console.error('❌ Erreur refreshManagementMessage:', err.message || err);
   }
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('add_account').setLabel('➕ Ajouter un compte').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('remove_account').setLabel('🗑️ Supprimer un compte').setStyle(ButtonStyle.Danger)
-  );
-
-  await channel.send({ embeds: [embed], components: [row] });
 }
 
 // ─── RECAP QUOTIDIEN ──────────────────────────────────────────────────────────
 async function sendDailyRecap() {
-  const accounts = await getAccounts();
-  if (accounts.length === 0) return;
+  try {
+    const accounts = await getAccounts();
+    if (accounts.length === 0) return;
 
-  const channel = await client.channels.fetch(DAILY_CHANNEL_ID);
-  const today   = new Date().toLocaleDateString('fr-FR');
+    const channel = await client.channels.fetch(DAILY_CHANNEL_ID);
+    const today   = new Date().toLocaleDateString('fr-FR');
 
-  const byVA = {};
-  accounts.forEach(acc => {
-    if (!byVA[acc.va_name]) byVA[acc.va_name] = [];
-    byVA[acc.va_name].push(acc);
-  });
-
-  for (const [vaName, accs] of Object.entries(byVA)) {
-    const msg = await channel.send({ content: `📋 **Recap du ${today}** — remplis tes stats !` });
-
-    const thread = await msg.startThread({
-      name: `Recap ${today} — ${vaName}`,
-      autoArchiveDuration: 1440
+    const byVA = {};
+    accounts.forEach(acc => {
+      if (!byVA[acc.va_name]) byVA[acc.va_name] = [];
+      byVA[acc.va_name].push(acc);
     });
 
-    const vaNames   = Object.keys(byVA);
-    const selectMenu = new StringSelectMenuBuilder()
-      .setCustomId(`select_va_${thread.id}`)
-      .setPlaceholder('Qui es-tu ?')
-      .addOptions(vaNames.map(name =>
-        new StringSelectMenuOptionBuilder().setLabel(name).setValue(name)
-      ));
+    for (const [vaName, accs] of Object.entries(byVA)) {
+      const msg = await channel.send({ content: `📋 **Recap du ${today}** — remplis tes stats !` });
 
-    const row = new ActionRowBuilder().addComponents(selectMenu);
-    await thread.send({ content: '👋 Sélectionne ton nom pour commencer :', components: [row] });
+      const thread = await msg.startThread({
+        name: `Recap ${today} — ${vaName}`,
+        autoArchiveDuration: 1440
+      });
+
+      const vaNames   = Object.keys(byVA);
+      const selectMenu = new StringSelectMenuBuilder()
+        .setCustomId(`select_va_${thread.id}`)
+        .setPlaceholder('Qui es-tu ?')
+        .addOptions(vaNames.map(name =>
+          new StringSelectMenuOptionBuilder().setLabel(name).setValue(name)
+        ));
+
+      const row = new ActionRowBuilder().addComponents(selectMenu);
+      await thread.send({ content: '👋 Sélectionne ton nom pour commencer :', components: [row] });
+    }
+  } catch (err) {
+    console.error('❌ Erreur sendDailyRecap:', err.message || err);
   }
 }
 
@@ -140,8 +158,12 @@ function scheduleDailyRecap() {
 // ─── READY ────────────────────────────────────────────────────────────────────
 client.on('ready', async () => {
   console.log(`✅ Bot connecté : ${client.user.tag}`);
-  const channel = await client.channels.fetch(MANAGEMENT_CHANNEL_ID);
-  await refreshManagementMessage(channel);
+  try {
+    const channel = await client.channels.fetch(MANAGEMENT_CHANNEL_ID);
+    await refreshManagementMessage(channel);
+  } catch (err) {
+    console.error('❌ Erreur au démarrage (management message):', err.message || err);
+  }
   scheduleDailyRecap();
   startLeaderboardScheduler(client); // ← LEADERBOARD : démarre le scheduler
 });
