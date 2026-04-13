@@ -2,7 +2,9 @@
 const { EmbedBuilder } = require('discord.js');
 const admin = require('firebase-admin');
 
-const db = admin.firestore();
+// Lazy init — on récupère db seulement quand on en a besoin,
+// après que index.js ait appelé initializeApp()
+function getDb() { return admin.firestore(); }
 
 // ─── COMPUTE STATS ─────────────────────────────────────────────────────────────
 
@@ -12,6 +14,7 @@ async function computeLeaderboard() {
   const weekStart  = new Date(todayStart.getTime() - 7 * 24 * 60 * 60 * 1000);
 
   // Fetch all accounts & subscribers in parallel
+  const db = getDb();
   const [accountsSnap, subsSnap] = await Promise.all([
     db.collection('instagram_accounts').get(),
     db.collection('subscribers').get()
