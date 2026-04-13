@@ -1,6 +1,6 @@
 const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } = require('discord.js');
 const admin = require('firebase-admin');
-const { updateLeaderboard, startLeaderboardScheduler } = require('./leaderboard'); // ← LEADERBOARD
+const { updateLeaderboard, startLeaderboardScheduler } = require('./leaderboard');
 
 const cred = JSON.parse(process.env.FIREBASE_CREDENTIALS);
 admin.initializeApp({ credential: admin.credential.cert(cred) });
@@ -19,6 +19,7 @@ const RECAP_CHANNEL_ID      = '1492880708832858222';
 const DAILY_CHANNEL_ID      = '1492880546785660969';
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
+
 async function getAccounts() {
   try {
     const snap = await db.collection('instagram_accounts').get();
@@ -31,40 +32,47 @@ async function getAccounts() {
 
 async function getSubsStats(trackingLink, accountId) {
   try {
-    const now = new Date();
+    const now          = new Date();
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-    const lastSnap = await db.collection('instagram_daily')
-      .where('account_id', '==', accountId)
-      .orderBy('date', 'desc')
-      .limit(1)
+    // 1 lecture : compteurs déjà stockés sur le compte
+    const accDoc = await db.collection('instagram_accounts').doc(accountId).get();
+    const acc    = accDoc.data();
+
+    // Query filtrée 7j — pas de full scan
+    const link     = (trackingLink || '').toLowerCase().trim();
+    const weekSnap = await db.collection('subscribers')
+      .where('source', '==', link)
+      .where('joined_at', '>=', sevenDaysAgo.toISOString())
       .get();
 
-    const lastFilledAt = !lastSnap.empty
-      ? new Date(lastSnap.docs[0].data().filled_at)
-      : new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
-    const snap = await db.collection('subscribers').get();
-    const subs = snap.docs.map(d => d.data()).filter(s => {
-      const src  = (s.source || '').toLowerCase().trim();
-      const link = (trackingLink || '').toLowerCase().trim();
-      return src === link;
-    });
-
-    const todaySubs     = subs.filter(s => { const d = new Date(s.joined_at); return d >= lastFilledAt && d <= now; }).length;
-    const sevenDaysSubs = subs.filter(s => new Date(s.joined_at) >= sevenDaysAgo).length;
-
-    return { today: todaySubs, sevenDays: sevenDaysSubs, total: subs.length };
+    return {
+      today:     acc.subs_today  || 0,
+      sevenDays: weekSnap.size,
+      total:     acc.subs_total  || 0,
+    };
   } catch (err) {
     console.error('❌ Erreur getSubsStats:', err.message || err);
     return { today: 0, sevenDays: 0, total: 0 };
   }
 }
 
+async function resetSubsToday() {
+  try {
+    const snap  = await db.collection('instagram_accounts').get();
+    const batch = db.batch();
+    snap.docs.forEach(doc => batch.update(doc.ref, { subs_today: 0 }));
+    await batch.commit();
+    console.log('✅ subs_today remis à 0');
+  } catch (err) {
+    console.error('❌ Erreur resetSubsToday:', err.message || err);
+  }
+}
+
 async function refreshManagementMessage(channel) {
   try {
-    const accounts = await getAccounts();
-    const messages  = await channel.messages.fetch({ limit: 10 });
+    const accounts   = await getAccounts();
+    const messages   = await channel.messages.fetch({ limit: 10 });
     const botMessages = messages.filter(m => m.author.id === client.user.id && !m.hasThread);
     for (const msg of botMessages.values()) await msg.delete().catch(() => {});
 
@@ -84,8 +92,8 @@ async function refreshManagementMessage(channel) {
     if (accounts.length > 0) {
       Object.entries(byVA).forEach(([va, accs]) => {
         embed.addFields({
-          name: `👤 ${va}`,
-          value: accs.map(a => `• **@${a.insta_name}** — Lien tracking: \`${a.tracking_link}\``).join('\n'),
+          name:   `👤 ${va}`,
+          value:  accs.map(a => `• **@${a.insta_name}** — Lien tracking: \`${a.tracking_link}\``).join('\n'),
           inline: false
         });
       });
@@ -103,6 +111,7 @@ async function refreshManagementMessage(channel) {
 }
 
 // ─── RECAP QUOTIDIEN ──────────────────────────────────────────────────────────
+
 async function sendDailyRecap() {
   try {
     const accounts = await getAccounts();
@@ -125,7 +134,7 @@ async function sendDailyRecap() {
         autoArchiveDuration: 1440
       });
 
-      const vaNames   = Object.keys(byVA);
+      const vaNames    = Object.keys(byVA);
       const selectMenu = new StringSelectMenuBuilder()
         .setCustomId(`select_va_${thread.id}`)
         .setPlaceholder('Qui es-tu ?')
@@ -141,21 +150,27 @@ async function sendDailyRecap() {
   }
 }
 
-// ─── PLANIFICATION 16H ────────────────────────────────────────────────────────
+// ─── PLANIFICATION 14H ────────────────────────────────────────────────────────
+
 function scheduleDailyRecap() {
-  const now    = new Date();
-  const next16h = new Date(now);
-  next16h.setHours(14, 0, 0, 0);
-  if (next16h <= now) next16h.setDate(next16h.getDate() + 1);
-  const delay = next16h - now;
+  const now     = new Date();
+  const next14h = new Date(now);
+  next14h.setHours(14, 0, 0, 0);
+  if (next14h <= now) next14h.setDate(next14h.getDate() + 1);
+  const delay = next14h - now;
   console.log(`⏰ Prochain recap dans ${Math.round(delay / 60000)} minutes`);
   setTimeout(() => {
+    resetSubsToday();
     sendDailyRecap();
-    setInterval(sendDailyRecap, 24 * 60 * 60 * 1000);
+    setInterval(() => {
+      resetSubsToday();
+      sendDailyRecap();
+    }, 24 * 60 * 60 * 1000);
   }, delay);
 }
 
 // ─── READY ────────────────────────────────────────────────────────────────────
+
 client.on('ready', async () => {
   console.log(`✅ Bot connecté : ${client.user.tag}`);
   try {
@@ -165,10 +180,11 @@ client.on('ready', async () => {
     console.error('❌ Erreur au démarrage (management message):', err.message || err);
   }
   scheduleDailyRecap();
-  startLeaderboardScheduler(client); // ← LEADERBOARD : démarre le scheduler
+  startLeaderboardScheduler(client);
 });
 
 // ─── INTERACTIONS ─────────────────────────────────────────────────────────────
+
 client.on('interactionCreate', async (interaction) => {
 
   // ─── SELECT VA ──────────────────────────────────────────────────────────────
@@ -358,7 +374,15 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      await db.collection('instagram_accounts').add({ va_name, insta_name, tracking_link, added_at: new Date().toISOString(), active: true });
+      await db.collection('instagram_accounts').add({
+        va_name,
+        insta_name,
+        tracking_link,
+        added_at:   new Date().toISOString(),
+        active:     true,
+        subs_today: 0,
+        subs_total: 0
+      });
       await interaction.editReply({ content: `✅ Compte **@${insta_name}** ajouté pour **${va_name}** !` });
 
       const channel = await client.channels.fetch(MANAGEMENT_CHANNEL_ID);
@@ -397,6 +421,7 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // ─── RECAP VA COMPLET ─────────────────────────────────────────────────────────
+
 async function checkAndSendVARecap(interaction, vaName, today) {
   const accounts   = await getAccounts();
   const vaAccounts = accounts.filter(a => a.va_name === vaName);
@@ -425,6 +450,7 @@ async function checkAndSendVARecap(interaction, vaName, today) {
 }
 
 // ─── RECAP CEO ────────────────────────────────────────────────────────────────
+
 async function sendCEORecap(today) {
   const accounts   = await getAccounts();
   const filledSnap = await db.collection('instagram_daily').where('date', '==', today).get();
@@ -472,19 +498,18 @@ async function sendCEORecap(today) {
   recapText += `\n---\n📈 **Total global** : ${totalSubsToday} subs depuis dernier recap | ${totalSubs7days} (7j)`;
 
   await recapChannel.send({ content: recapText });
-
-  // ← LEADERBOARD : update automatique après le recap CEO complet
   await updateLeaderboard(client);
 }
 
-// ─── COMMANDE MANUELLE ────────────────────────────────────────────────────────
+// ─── COMMANDES MANUELLES ──────────────────────────────────────────────────────
+
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (message.content === '!recap') {
     await message.reply('🔄 Lancement du recap...');
     await sendDailyRecap();
   }
-  if (message.content === '!leaderboard') { // ← LEADERBOARD : update manuelle
+  if (message.content === '!leaderboard') {
     await message.reply('🔄 Mise à jour du leaderboard...');
     await updateLeaderboard(client);
   }
