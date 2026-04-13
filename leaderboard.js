@@ -2,48 +2,38 @@
 const { EmbedBuilder } = require('discord.js');
 const admin = require('firebase-admin');
 
-// Lazy init — on récupère db seulement quand on en a besoin,
-// après que index.js ait appelé initializeApp()
 function getDb() { return admin.firestore(); }
 
 // ─── COMPUTE STATS ─────────────────────────────────────────────────────────────
 
 async function computeLeaderboard() {
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const weekStart  = new Date(todayStart.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const now          = new Date();
+  const weekStart    = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const weekStartISO = weekStart.toISOString();
 
-  // Fetch all accounts & subscribers in parallel
-  const db = getDb();
-  const [accountsSnap, subsSnap] = await Promise.all([
-    db.collection('instagram_accounts').get(),
-    db.collection('subscribers').get()
-  ]);
+  const db           = getDb();
+  const accountsSnap = await db.collection('instagram_accounts').get();
+  const accounts     = accountsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-  const accounts = accountsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-  const subs     = subsSnap.docs.map(d => d.data());
-
-  // ── Per-account stats ──────────────────────────────────────────────────────
   const accountStats = [];
 
   for (const acc of accounts) {
-    const link    = (acc.tracking_link || '').toLowerCase().trim();
-    const accSubs = subs.filter(s => (s.source || '').toLowerCase().trim() === link);
+    const link = (acc.tracking_link || '').toLowerCase().trim();
 
-    const daily  = accSubs.filter(s => new Date(s.joined_at) >= todayStart).length;
-    const weekly = accSubs.filter(s => new Date(s.joined_at) >= weekStart).length;
-    const total  = accSubs.length;
+    const weekSnap = await db.collection('subscribers')
+      .where('source', '==', link)
+      .where('joined_at', '>=', weekStartISO)
+      .get();
 
     accountStats.push({
-      handle:  acc.instagram_handle || acc.id,
-      va_name: acc.va_name || '—',
-      daily,
-      weekly,
-      total
+      handle:  acc.insta_name || acc.id,
+      va_name: acc.va_name    || '—',
+      daily:   acc.subs_today  || 0,
+      weekly:  weekSnap.size,
+      total:   acc.subs_total  || 0,
     });
   }
 
-  // ── Per-VA stats (cumul de tous ses comptes) ───────────────────────────────
   const vaMap = {};
   for (const a of accountStats) {
     if (!vaMap[a.va_name]) vaMap[a.va_name] = { daily: 0, weekly: 0, total: 0 };
@@ -54,10 +44,14 @@ async function computeLeaderboard() {
   const vaStats = Object.entries(vaMap).map(([name, s]) => ({ name, ...s }));
 
   return {
-    accounts: { daily: [...accountStats].sort((a, b) => b.daily  - a.daily),
-                weekly:[...accountStats].sort((a, b) => b.weekly - a.weekly) },
-    vas:      { daily: [...vaStats].sort((a, b) => b.daily  - a.daily),
-                weekly:[...vaStats].sort((a, b) => b.weekly - a.weekly) }
+    accounts: {
+      daily:  [...accountStats].sort((a, b) => b.daily  - a.daily),
+      weekly: [...accountStats].sort((a, b) => b.weekly - a.weekly)
+    },
+    vas: {
+      daily:  [...vaStats].sort((a, b) => b.daily  - a.daily),
+      weekly: [...vaStats].sort((a, b) => b.weekly - a.weekly)
+    }
   };
 }
 
@@ -94,45 +88,35 @@ async function buildLeaderboardEmbeds() {
   const dateStr = now.toLocaleDateString('fr-FR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
   const timeStr = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 
-  // ── Embed 1 : Leaderboard VAs ─────────────────────────────────────────────
   const vaEmbed = new EmbedBuilder()
     .setTitle('👑  Leaderboard VAs — Subs Telegram')
     .setColor(0xF59E0B)
     .addFields(
       {
-        name: '📅  Aujourd\'hui',
-        value: stats.vas.daily.length
-          ? stats.vas.daily.map(vaRow).join('\n')
-          : empty(),
+        name:   '📅  Aujourd\'hui',
+        value:  stats.vas.daily.length  ? stats.vas.daily.map(vaRow).join('\n')         : empty(),
         inline: true
       },
       {
-        name: '📆  7 derniers jours',
-        value: stats.vas.weekly.length
-          ? stats.vas.weekly.map(vaRowWeekly).join('\n')
-          : empty(),
+        name:   '📆  7 derniers jours',
+        value:  stats.vas.weekly.length ? stats.vas.weekly.map(vaRowWeekly).join('\n')  : empty(),
         inline: true
       }
     )
     .setFooter({ text: `Mis à jour · ${dateStr} à ${timeStr}` });
 
-  // ── Embed 2 : Leaderboard Comptes ─────────────────────────────────────────
   const accountEmbed = new EmbedBuilder()
     .setTitle('📊  Leaderboard Comptes — Subs Telegram')
     .setColor(0x6366F1)
     .addFields(
       {
-        name: '📅  Aujourd\'hui',
-        value: stats.accounts.daily.length
-          ? stats.accounts.daily.map(accRow).join('\n')
-          : empty(),
+        name:   '📅  Aujourd\'hui',
+        value:  stats.accounts.daily.length  ? stats.accounts.daily.map(accRow).join('\n')         : empty(),
         inline: true
       },
       {
-        name: '📆  7 derniers jours',
-        value: stats.accounts.weekly.length
-          ? stats.accounts.weekly.map(accRowWeekly).join('\n')
-          : empty(),
+        name:   '📆  7 derniers jours',
+        value:  stats.accounts.weekly.length ? stats.accounts.weekly.map(accRowWeekly).join('\n')  : empty(),
         inline: true
       }
     )
@@ -151,14 +135,11 @@ async function updateLeaderboard(client) {
     const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel) return console.warn('[Leaderboard] Salon introuvable.');
 
-    const embeds = await buildLeaderboardEmbeds();
-
-    // Cherche les messages existants du bot dans ce salon
+    const embeds   = await buildLeaderboardEmbeds();
     const messages = await channel.messages.fetch({ limit: 20 });
     const botMsgs  = [...messages.filter(m => m.author.id === client.user.id).values()];
 
     if (botMsgs.length > 0) {
-      // Edit le 1er, supprime les autres
       await botMsgs[0].edit({ embeds }).catch(console.error);
       for (let i = 1; i < botMsgs.length; i++) {
         await botMsgs[i].delete().catch(() => {});
@@ -177,14 +158,11 @@ async function updateLeaderboard(client) {
   }
 }
 
-// ─── SCHEDULER (appeler une fois après client.on('ready')) ────────────────────
+// ─── SCHEDULER ────────────────────────────────────────────────────────────────
 
 function startLeaderboardScheduler(client) {
-  // Update immédiate au démarrage
   updateLeaderboard(client);
-
-  // Update automatique toutes les 6h (4x par jour)
-  setInterval(() => updateLeaderboard(client), 6 * 60 * 60 * 1000);
+  setInterval(() => updateLeaderboard(client), 12 * 60 * 60 * 1000); // toutes les 12h
 }
 
 module.exports = { updateLeaderboard, startLeaderboardScheduler };
