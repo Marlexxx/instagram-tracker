@@ -480,5 +480,12 @@ async function sendCEORecap(today) {
 
   await recapChannel.send({ content: recapText });
 }
-
+// ─── COMMANDE MANUELLE ────────────────────────────────────────────────────────
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+  if (message.content === '!recap') {
+    await message.reply('🔄 Lancement du recap...');
+    await sendDailyRecap();
+  }
+});
 client.login(process.env.DISCORD_TOKEN);
