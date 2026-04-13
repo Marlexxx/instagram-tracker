@@ -1,5 +1,6 @@
 const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } = require('discord.js');
 const admin = require('firebase-admin');
+const { updateLeaderboard, startLeaderboardScheduler } = require('./leaderboard'); // ← LEADERBOARD
 
 const cred = JSON.parse(process.env.FIREBASE_CREDENTIALS);
 admin.initializeApp({ credential: admin.credential.cert(cred) });
@@ -14,8 +15,8 @@ const client = new Client({
 });
 
 const MANAGEMENT_CHANNEL_ID = '1492870240718290964';
-const RECAP_CHANNEL_ID = '1492880708832858222';
-const DAILY_CHANNEL_ID = '1492880546785660969';
+const RECAP_CHANNEL_ID      = '1492880708832858222';
+const DAILY_CHANNEL_ID      = '1492880546785660969';
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 async function getAccounts() {
@@ -39,31 +40,22 @@ async function getSubsStats(trackingLink, accountId) {
 
   const snap = await db.collection('subscribers').get();
   const subs = snap.docs.map(d => d.data()).filter(s => {
-    const src = (s.source || '').toLowerCase().trim();
+    const src  = (s.source || '').toLowerCase().trim();
     const link = (trackingLink || '').toLowerCase().trim();
     return src === link;
   });
 
-  const todaySubs = subs.filter(s => {
-    const d = new Date(s.joined_at);
-    return d >= lastFilledAt && d <= now;
-  }).length;
-
-  const sevenDaysSubs = subs.filter(s => {
-    const d = new Date(s.joined_at);
-    return d >= sevenDaysAgo;
-  }).length;
+  const todaySubs     = subs.filter(s => { const d = new Date(s.joined_at); return d >= lastFilledAt && d <= now; }).length;
+  const sevenDaysSubs = subs.filter(s => new Date(s.joined_at) >= sevenDaysAgo).length;
 
   return { today: todaySubs, sevenDays: sevenDaysSubs, total: subs.length };
 }
 
 async function refreshManagementMessage(channel) {
   const accounts = await getAccounts();
-  const messages = await channel.messages.fetch({ limit: 10 });
+  const messages  = await channel.messages.fetch({ limit: 10 });
   const botMessages = messages.filter(m => m.author.id === client.user.id && !m.hasThread);
-  for (const msg of botMessages.values()) {
-    await msg.delete().catch(() => {});
-  }
+  for (const msg of botMessages.values()) await msg.delete().catch(() => {});
 
   const byVA = {};
   accounts.forEach(acc => {
@@ -89,14 +81,8 @@ async function refreshManagementMessage(channel) {
   }
 
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('add_account')
-      .setLabel('➕ Ajouter un compte')
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId('remove_account')
-      .setLabel('🗑️ Supprimer un compte')
-      .setStyle(ButtonStyle.Danger)
+    new ButtonBuilder().setCustomId('add_account').setLabel('➕ Ajouter un compte').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('remove_account').setLabel('🗑️ Supprimer un compte').setStyle(ButtonStyle.Danger)
   );
 
   await channel.send({ embeds: [embed], components: [row] });
@@ -108,7 +94,7 @@ async function sendDailyRecap() {
   if (accounts.length === 0) return;
 
   const channel = await client.channels.fetch(DAILY_CHANNEL_ID);
-  const today = new Date().toLocaleDateString('fr-FR');
+  const today   = new Date().toLocaleDateString('fr-FR');
 
   const byVA = {};
   accounts.forEach(acc => {
@@ -117,23 +103,19 @@ async function sendDailyRecap() {
   });
 
   for (const [vaName, accs] of Object.entries(byVA)) {
-    const msg = await channel.send({
-      content: `📋 **Recap du ${today}** — remplis tes stats !`
-    });
+    const msg = await channel.send({ content: `📋 **Recap du ${today}** — remplis tes stats !` });
 
     const thread = await msg.startThread({
       name: `Recap ${today} — ${vaName}`,
       autoArchiveDuration: 1440
     });
 
-    const vaNames = Object.keys(byVA);
+    const vaNames   = Object.keys(byVA);
     const selectMenu = new StringSelectMenuBuilder()
       .setCustomId(`select_va_${thread.id}`)
       .setPlaceholder('Qui es-tu ?')
       .addOptions(vaNames.map(name =>
-        new StringSelectMenuOptionBuilder()
-          .setLabel(name)
-          .setValue(name)
+        new StringSelectMenuOptionBuilder().setLabel(name).setValue(name)
       ));
 
     const row = new ActionRowBuilder().addComponents(selectMenu);
@@ -143,7 +125,7 @@ async function sendDailyRecap() {
 
 // ─── PLANIFICATION 16H ────────────────────────────────────────────────────────
 function scheduleDailyRecap() {
-  const now = new Date();
+  const now    = new Date();
   const next16h = new Date(now);
   next16h.setHours(14, 0, 0, 0);
   if (next16h <= now) next16h.setDate(next16h.getDate() + 1);
@@ -161,6 +143,7 @@ client.on('ready', async () => {
   const channel = await client.channels.fetch(MANAGEMENT_CHANNEL_ID);
   await refreshManagementMessage(channel);
   scheduleDailyRecap();
+  startLeaderboardScheduler(client); // ← LEADERBOARD : démarre le scheduler
 });
 
 // ─── INTERACTIONS ─────────────────────────────────────────────────────────────
@@ -169,7 +152,7 @@ client.on('interactionCreate', async (interaction) => {
   // ─── SELECT VA ──────────────────────────────────────────────────────────────
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith('select_va_')) {
     const selectedVA = interaction.values[0];
-    const accounts = await getAccounts();
+    const accounts   = await getAccounts();
     const vaAccounts = accounts.filter(a => a.va_name === selectedVA);
 
     await interaction.update({ content: `✅ Identifié comme **${selectedVA}** ! Remplis maintenant tes comptes :`, components: [] });
@@ -189,8 +172,8 @@ client.on('interactionCreate', async (interaction) => {
   // ─── BOUTON REMPLIR COMPTE ──────────────────────────────────────────────────
   if (interaction.isButton() && interaction.customId.startsWith('fill_account_')) {
     const accountId = interaction.customId.replace('fill_account_', '');
-    const accDoc = await db.collection('instagram_accounts').doc(accountId).get();
-    const acc = accDoc.data();
+    const accDoc    = await db.collection('instagram_accounts').doc(accountId).get();
+    const acc       = accDoc.data();
 
     const modal = new ModalBuilder()
       .setCustomId(`modal_fill_${accountId}`)
@@ -219,19 +202,18 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
-  // ─── MODAL STATS COMPTE (FIX: deferReply + editReply) ──────────────────────
+  // ─── MODAL STATS COMPTE ─────────────────────────────────────────────────────
   if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_fill_')) {
     await interaction.deferReply();
 
     try {
       const accountId = interaction.customId.replace('modal_fill_', '');
-      const accDoc = await db.collection('instagram_accounts').doc(accountId).get();
-      const acc = accDoc.data();
+      const accDoc    = await db.collection('instagram_accounts').doc(accountId).get();
+      const acc       = accDoc.data();
 
-      const active = interaction.fields.getTextInputValue('active').toLowerCase().includes('oui');
+      const active    = interaction.fields.getTextInputValue('active').toLowerCase().includes('oui');
       const followers = parseInt(interaction.fields.getTextInputValue('followers').replace(/\s/g, '')) || 0;
 
-      // Calcule gain d'abonnés
       const lastSnap = await db.collection('instagram_daily')
         .where('account_id', '==', accountId)
         .orderBy('date', 'desc')
@@ -240,31 +222,28 @@ client.on('interactionCreate', async (interaction) => {
 
       let followerGain = 0;
       if (!lastSnap.empty) {
-        const lastData = lastSnap.docs[0].data();
-        followerGain = followers - (lastData.followers || 0);
+        followerGain = followers - (lastSnap.docs[0].data().followers || 0);
       }
 
-      // Subs Telegram
       const subs = await getSubsStats(acc.tracking_link, accountId);
 
-      // Sauvegarde dans Firebase
       const today = new Date().toISOString().split('T')[0];
       await db.collection('instagram_daily').add({
-        account_id: accountId,
-        insta_name: acc.insta_name,
-        va_name: acc.va_name,
-        date: today,
+        account_id:    accountId,
+        insta_name:    acc.insta_name,
+        va_name:       acc.va_name,
+        date:          today,
         active,
         followers,
         follower_gain: followerGain,
-        subs_today: subs.today,
-        subs_7days: subs.sevenDays,
-        subs_total: subs.total,
-        filled_at: new Date().toISOString()
+        subs_today:    subs.today,
+        subs_7days:    subs.sevenDays,
+        subs_total:    subs.total,
+        filled_at:     new Date().toISOString()
       });
 
       const statusEmoji = active ? '✅' : '❌';
-      const gainText = followerGain >= 0 ? `+${followerGain}` : `${followerGain}`;
+      const gainText    = followerGain >= 0 ? `+${followerGain}` : `${followerGain}`;
 
       await interaction.editReply({
         content: `${statusEmoji} **@${acc.insta_name}** enregistré !\n👥 Abonnés : **${followers.toLocaleString()}** (${gainText} aujourd'hui)\n📩 Subs Telegram depuis dernier recap : **${subs.today}** | 7j : **${subs.sevenDays}** | Total : **${subs.total}**`
@@ -347,8 +326,8 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.deferReply({ flags: 64 });
 
     try {
-      const va_name = interaction.fields.getTextInputValue('va_name').trim();
-      const insta_name = interaction.fields.getTextInputValue('insta_name').trim().replace('@', '');
+      const va_name       = interaction.fields.getTextInputValue('va_name').trim();
+      const insta_name    = interaction.fields.getTextInputValue('insta_name').trim().replace('@', '');
       const tracking_link = interaction.fields.getTextInputValue('tracking_link').trim();
 
       const existing = await db.collection('instagram_accounts').where('insta_name', '==', insta_name).get();
@@ -357,15 +336,9 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      await db.collection('instagram_accounts').add({
-        va_name,
-        insta_name,
-        tracking_link,
-        added_at: new Date().toISOString(),
-        active: true
-      });
-
+      await db.collection('instagram_accounts').add({ va_name, insta_name, tracking_link, added_at: new Date().toISOString(), active: true });
       await interaction.editReply({ content: `✅ Compte **@${insta_name}** ajouté pour **${va_name}** !` });
+
       const channel = await client.channels.fetch(MANAGEMENT_CHANNEL_ID);
       await refreshManagementMessage(channel);
     } catch (err) {
@@ -381,7 +354,7 @@ client.on('interactionCreate', async (interaction) => {
 
     try {
       const insta_name = interaction.fields.getTextInputValue('insta_name').trim().replace('@', '');
-      const snap = await db.collection('instagram_accounts').where('insta_name', '==', insta_name).get();
+      const snap       = await db.collection('instagram_accounts').where('insta_name', '==', insta_name).get();
 
       if (snap.empty) {
         await interaction.editReply({ content: `❌ Compte **@${insta_name}** introuvable.` });
@@ -390,6 +363,7 @@ client.on('interactionCreate', async (interaction) => {
 
       await snap.docs[0].ref.delete();
       await interaction.editReply({ content: `✅ Compte **@${insta_name}** supprimé.` });
+
       const channel = await client.channels.fetch(MANAGEMENT_CHANNEL_ID);
       await refreshManagementMessage(channel);
     } catch (err) {
@@ -402,7 +376,7 @@ client.on('interactionCreate', async (interaction) => {
 
 // ─── RECAP VA COMPLET ─────────────────────────────────────────────────────────
 async function checkAndSendVARecap(interaction, vaName, today) {
-  const accounts = await getAccounts();
+  const accounts   = await getAccounts();
   const vaAccounts = accounts.filter(a => a.va_name === vaName);
 
   const filledSnap = await db.collection('instagram_daily')
@@ -412,13 +386,13 @@ async function checkAndSendVARecap(interaction, vaName, today) {
 
   if (filledSnap.size < vaAccounts.length) return;
 
-  const filled = filledSnap.docs.map(d => d.data());
+  const filled  = filledSnap.docs.map(d => d.data());
   const dateStr = new Date().toLocaleDateString('fr-FR');
 
   let recapText = `📅 **Recap du ${dateStr} — ${vaName}**\n\n`;
   filled.forEach(f => {
     const statusEmoji = f.active ? '✅' : '❌';
-    const gainText = f.follower_gain >= 0 ? `+${f.follower_gain}` : `${f.follower_gain}`;
+    const gainText    = f.follower_gain >= 0 ? `+${f.follower_gain}` : `${f.follower_gain}`;
     recapText += `${statusEmoji} **@${f.insta_name}**\n`;
     recapText += `  👥 Abonnés : ${f.followers.toLocaleString()} (${gainText})\n`;
     recapText += `  📩 Subs TG depuis dernier recap : ${f.subs_today} | 7j : ${f.subs_7days} | Total : ${f.subs_total}\n\n`;
@@ -430,24 +404,22 @@ async function checkAndSendVARecap(interaction, vaName, today) {
 
 // ─── RECAP CEO ────────────────────────────────────────────────────────────────
 async function sendCEORecap(today) {
-  const accounts = await getAccounts();
-  const filledSnap = await db.collection('instagram_daily')
-    .where('date', '==', today)
-    .get();
+  const accounts   = await getAccounts();
+  const filledSnap = await db.collection('instagram_daily').where('date', '==', today).get();
 
   if (filledSnap.size < accounts.length) return;
 
   const filled = filledSnap.docs.map(d => d.data());
-  const byVA = {};
+  const byVA   = {};
   filled.forEach(f => {
     if (!byVA[f.va_name]) byVA[f.va_name] = [];
     byVA[f.va_name].push(f);
   });
 
-  const dateStr = new Date().toLocaleDateString('fr-FR');
+  const dateStr      = new Date().toLocaleDateString('fr-FR');
   const recapChannel = await client.channels.fetch(RECAP_CHANNEL_ID);
 
-  let recapText = `📊 **Recap complet du ${dateStr}**\n\n`;
+  let recapText      = `📊 **Recap complet du ${dateStr}**\n\n`;
   let totalSubsToday = 0;
   let totalSubs7days = 0;
 
@@ -464,7 +436,7 @@ async function sendCEORecap(today) {
     recapText += `👤 **${va}**\n`;
     accs.forEach(f => {
       const statusEmoji = f.active ? '✅' : '❌';
-      const gainText = f.follower_gain >= 0 ? `+${f.follower_gain}` : `${f.follower_gain}`;
+      const gainText    = f.follower_gain >= 0 ? `+${f.follower_gain}` : `${f.follower_gain}`;
       recapText += `  ${statusEmoji} @${f.insta_name} — ${f.followers.toLocaleString()} abonnés (${gainText}) | Subs TG : ${f.subs_today}\n`;
     });
     recapText += `  📩 Total : **${subsToday}** depuis dernier recap | **${subs7days}** (7j)\n\n`;
@@ -475,11 +447,14 @@ async function sendCEORecap(today) {
     const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
     recapText += `${medal} **${v.va}** — ${v.subs7days} subs\n`;
   });
-
   recapText += `\n---\n📈 **Total global** : ${totalSubsToday} subs depuis dernier recap | ${totalSubs7days} (7j)`;
 
   await recapChannel.send({ content: recapText });
+
+  // ← LEADERBOARD : update automatique après le recap CEO complet
+  await updateLeaderboard(client);
 }
+
 // ─── COMMANDE MANUELLE ────────────────────────────────────────────────────────
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
@@ -487,5 +462,10 @@ client.on('messageCreate', async (message) => {
     await message.reply('🔄 Lancement du recap...');
     await sendDailyRecap();
   }
+  if (message.content === '!leaderboard') { // ← LEADERBOARD : update manuelle
+    await message.reply('🔄 Mise à jour du leaderboard...');
+    await updateLeaderboard(client);
+  }
 });
+
 client.login(process.env.DISCORD_TOKEN);
