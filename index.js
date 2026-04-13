@@ -27,7 +27,6 @@ async function getSubsStats(trackingLink, accountId) {
   const now = new Date();
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-  // Récupère le dernier recap pour avoir l'heure de référence
   const lastSnap = await db.collection('instagram_daily')
     .where('account_id', '==', accountId)
     .orderBy('date', 'desc')
@@ -220,56 +219,62 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
-  // ─── MODAL STATS COMPTE ─────────────────────────────────────────────────────
+  // ─── MODAL STATS COMPTE (FIX: deferReply + editReply) ──────────────────────
   if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_fill_')) {
-    const accountId = interaction.customId.replace('modal_fill_', '');
-    const accDoc = await db.collection('instagram_accounts').doc(accountId).get();
-    const acc = accDoc.data();
+    await interaction.deferReply();
 
-    const active = interaction.fields.getTextInputValue('active').toLowerCase().includes('oui');
-    const followers = parseInt(interaction.fields.getTextInputValue('followers').replace(/\s/g, '')) || 0;
+    try {
+      const accountId = interaction.customId.replace('modal_fill_', '');
+      const accDoc = await db.collection('instagram_accounts').doc(accountId).get();
+      const acc = accDoc.data();
 
-    // Calcule gain d'abonnés
-    const lastSnap = await db.collection('instagram_daily')
-      .where('account_id', '==', accountId)
-      .orderBy('date', 'desc')
-      .limit(1)
-      .get();
+      const active = interaction.fields.getTextInputValue('active').toLowerCase().includes('oui');
+      const followers = parseInt(interaction.fields.getTextInputValue('followers').replace(/\s/g, '')) || 0;
 
-    let followerGain = 0;
-    if (!lastSnap.empty) {
-      const lastData = lastSnap.docs[0].data();
-      followerGain = followers - (lastData.followers || 0);
+      // Calcule gain d'abonnés
+      const lastSnap = await db.collection('instagram_daily')
+        .where('account_id', '==', accountId)
+        .orderBy('date', 'desc')
+        .limit(1)
+        .get();
+
+      let followerGain = 0;
+      if (!lastSnap.empty) {
+        const lastData = lastSnap.docs[0].data();
+        followerGain = followers - (lastData.followers || 0);
+      }
+
+      // Subs Telegram
+      const subs = await getSubsStats(acc.tracking_link, accountId);
+
+      // Sauvegarde dans Firebase
+      const today = new Date().toISOString().split('T')[0];
+      await db.collection('instagram_daily').add({
+        account_id: accountId,
+        insta_name: acc.insta_name,
+        va_name: acc.va_name,
+        date: today,
+        active,
+        followers,
+        follower_gain: followerGain,
+        subs_today: subs.today,
+        subs_7days: subs.sevenDays,
+        subs_total: subs.total,
+        filled_at: new Date().toISOString()
+      });
+
+      const statusEmoji = active ? '✅' : '❌';
+      const gainText = followerGain >= 0 ? `+${followerGain}` : `${followerGain}`;
+
+      await interaction.editReply({
+        content: `${statusEmoji} **@${acc.insta_name}** enregistré !\n👥 Abonnés : **${followers.toLocaleString()}** (${gainText} aujourd'hui)\n📩 Subs Telegram depuis dernier recap : **${subs.today}** | 7j : **${subs.sevenDays}** | Total : **${subs.total}**`
+      });
+
+      await checkAndSendVARecap(interaction, acc.va_name, today);
+    } catch (err) {
+      console.error('Erreur modal_fill:', err);
+      await interaction.editReply({ content: '❌ Une erreur est survenue, réessaie.' }).catch(() => {});
     }
-
-    // Subs Telegram
-    const subs = await getSubsStats(acc.tracking_link, accountId);
-
-    // Sauvegarde dans Firebase
-    const today = new Date().toISOString().split('T')[0];
-    await db.collection('instagram_daily').add({
-      account_id: accountId,
-      insta_name: acc.insta_name,
-      va_name: acc.va_name,
-      date: today,
-      active,
-      followers,
-      follower_gain: followerGain,
-      subs_today: subs.today,
-      subs_7days: subs.sevenDays,
-      subs_total: subs.total,
-      filled_at: new Date().toISOString()
-    });
-
-    const statusEmoji = active ? '✅' : '❌';
-    const gainText = followerGain >= 0 ? `+${followerGain}` : `${followerGain}`;
-
-    await interaction.reply({
-      content: `${statusEmoji} **@${acc.insta_name}** enregistré !\n👥 Abonnés : **${followers.toLocaleString()}** (${gainText} aujourd'hui)\n📩 Subs Telegram depuis dernier recap : **${subs.today}** | 7j : **${subs.sevenDays}** | Total : **${subs.total}**`,
-      ephemeral: false
-    });
-
-    await checkAndSendVARecap(interaction, acc.va_name, today);
     return;
   }
 
@@ -314,7 +319,7 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isButton() && interaction.customId === 'remove_account') {
     const accounts = await getAccounts();
     if (accounts.length === 0) {
-      await interaction.reply({ content: '❌ Aucun compte à supprimer.', ephemeral: true });
+      await interaction.reply({ content: '❌ Aucun compte à supprimer.', flags: 64 });
       return;
     }
 
@@ -339,44 +344,58 @@ client.on('interactionCreate', async (interaction) => {
 
   // ─── MODAL AJOUTER ──────────────────────────────────────────────────────────
   if (interaction.isModalSubmit() && interaction.customId === 'modal_add_account') {
-    const va_name = interaction.fields.getTextInputValue('va_name').trim();
-    const insta_name = interaction.fields.getTextInputValue('insta_name').trim().replace('@', '');
-    const tracking_link = interaction.fields.getTextInputValue('tracking_link').trim();
+    await interaction.deferReply({ flags: 64 });
 
-    const existing = await db.collection('instagram_accounts').where('insta_name', '==', insta_name).get();
-    if (!existing.empty) {
-      await interaction.reply({ content: `❌ Le compte **@${insta_name}** existe déjà.`, ephemeral: true });
-      return;
+    try {
+      const va_name = interaction.fields.getTextInputValue('va_name').trim();
+      const insta_name = interaction.fields.getTextInputValue('insta_name').trim().replace('@', '');
+      const tracking_link = interaction.fields.getTextInputValue('tracking_link').trim();
+
+      const existing = await db.collection('instagram_accounts').where('insta_name', '==', insta_name).get();
+      if (!existing.empty) {
+        await interaction.editReply({ content: `❌ Le compte **@${insta_name}** existe déjà.` });
+        return;
+      }
+
+      await db.collection('instagram_accounts').add({
+        va_name,
+        insta_name,
+        tracking_link,
+        added_at: new Date().toISOString(),
+        active: true
+      });
+
+      await interaction.editReply({ content: `✅ Compte **@${insta_name}** ajouté pour **${va_name}** !` });
+      const channel = await client.channels.fetch(MANAGEMENT_CHANNEL_ID);
+      await refreshManagementMessage(channel);
+    } catch (err) {
+      console.error('Erreur modal_add:', err);
+      await interaction.editReply({ content: '❌ Une erreur est survenue, réessaie.' }).catch(() => {});
     }
-
-    await db.collection('instagram_accounts').add({
-      va_name,
-      insta_name,
-      tracking_link,
-      added_at: new Date().toISOString(),
-      active: true
-    });
-
-    await interaction.reply({ content: `✅ Compte **@${insta_name}** ajouté pour **${va_name}** !`, ephemeral: true });
-    const channel = await client.channels.fetch(MANAGEMENT_CHANNEL_ID);
-    await refreshManagementMessage(channel);
     return;
   }
 
   // ─── MODAL SUPPRIMER ────────────────────────────────────────────────────────
   if (interaction.isModalSubmit() && interaction.customId === 'modal_remove_account') {
-    const insta_name = interaction.fields.getTextInputValue('insta_name').trim().replace('@', '');
-    const snap = await db.collection('instagram_accounts').where('insta_name', '==', insta_name).get();
+    await interaction.deferReply({ flags: 64 });
 
-    if (snap.empty) {
-      await interaction.reply({ content: `❌ Compte **@${insta_name}** introuvable.`, ephemeral: true });
-      return;
+    try {
+      const insta_name = interaction.fields.getTextInputValue('insta_name').trim().replace('@', '');
+      const snap = await db.collection('instagram_accounts').where('insta_name', '==', insta_name).get();
+
+      if (snap.empty) {
+        await interaction.editReply({ content: `❌ Compte **@${insta_name}** introuvable.` });
+        return;
+      }
+
+      await snap.docs[0].ref.delete();
+      await interaction.editReply({ content: `✅ Compte **@${insta_name}** supprimé.` });
+      const channel = await client.channels.fetch(MANAGEMENT_CHANNEL_ID);
+      await refreshManagementMessage(channel);
+    } catch (err) {
+      console.error('Erreur modal_remove:', err);
+      await interaction.editReply({ content: '❌ Une erreur est survenue, réessaie.' }).catch(() => {});
     }
-
-    await snap.docs[0].ref.delete();
-    await interaction.reply({ content: `✅ Compte **@${insta_name}** supprimé.`, ephemeral: true });
-    const channel = await client.channels.fetch(MANAGEMENT_CHANNEL_ID);
-    await refreshManagementMessage(channel);
     return;
   }
 });
@@ -432,7 +451,6 @@ async function sendCEORecap(today) {
   let totalSubsToday = 0;
   let totalSubs7days = 0;
 
-  // Leaderboard
   const vaStats = Object.entries(byVA).map(([va, accs]) => ({
     va,
     subsToday: accs.reduce((acc, a) => acc + a.subs_today, 0),
