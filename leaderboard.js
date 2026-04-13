@@ -144,29 +144,37 @@ async function buildLeaderboardEmbeds() {
 // ─── UPDATE THE CHANNEL ────────────────────────────────────────────────────────
 
 async function updateLeaderboard(client) {
-  const channelId = process.env.LEADERBOARD_CHANNEL_ID;
-  if (!channelId) return console.warn('[Leaderboard] LEADERBOARD_CHANNEL_ID non défini.');
+  try {
+    const channelId = process.env.LEADERBOARD_CHANNEL_ID;
+    if (!channelId) return console.warn('[Leaderboard] LEADERBOARD_CHANNEL_ID non défini.');
 
-  const channel = await client.channels.fetch(channelId).catch(() => null);
-  if (!channel) return console.warn('[Leaderboard] Salon introuvable.');
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel) return console.warn('[Leaderboard] Salon introuvable.');
 
-  const embeds = await buildLeaderboardEmbeds();
+    const embeds = await buildLeaderboardEmbeds();
 
-  // Cherche les messages existants du bot dans ce salon
-  const messages = await channel.messages.fetch({ limit: 20 });
-  const botMsgs  = [...messages.filter(m => m.author.id === client.user.id).values()];
+    // Cherche les messages existants du bot dans ce salon
+    const messages = await channel.messages.fetch({ limit: 20 });
+    const botMsgs  = [...messages.filter(m => m.author.id === client.user.id).values()];
 
-  if (botMsgs.length > 0) {
-    // Edit le 1er, supprime les autres
-    await botMsgs[0].edit({ embeds }).catch(console.error);
-    for (let i = 1; i < botMsgs.length; i++) {
-      await botMsgs[i].delete().catch(() => {});
+    if (botMsgs.length > 0) {
+      // Edit le 1er, supprime les autres
+      await botMsgs[0].edit({ embeds }).catch(console.error);
+      for (let i = 1; i < botMsgs.length; i++) {
+        await botMsgs[i].delete().catch(() => {});
+      }
+    } else {
+      await channel.send({ embeds }).catch(console.error);
     }
-  } else {
-    await channel.send({ embeds }).catch(console.error);
-  }
 
-  console.log('[Leaderboard] ✅ Mis à jour');
+    console.log('[Leaderboard] ✅ Mis à jour');
+  } catch (err) {
+    if (err.code === 8 || (err.details && err.details.includes('Quota'))) {
+      console.error('[Leaderboard] ⚠️ Quota Firestore dépassé, skip cette update');
+    } else {
+      console.error('[Leaderboard] ❌ Erreur:', err.message || err);
+    }
+  }
 }
 
 // ─── SCHEDULER (appeler une fois après client.on('ready')) ────────────────────
@@ -175,8 +183,8 @@ function startLeaderboardScheduler(client) {
   // Update immédiate au démarrage
   updateLeaderboard(client);
 
-  // Update automatique toutes les 30 min
-  setInterval(() => updateLeaderboard(client), 30 * 60 * 1000);
+  // Update automatique toutes les 6h (4x par jour)
+  setInterval(() => updateLeaderboard(client), 6 * 60 * 60 * 1000);
 }
 
 module.exports = { updateLeaderboard, startLeaderboardScheduler };
