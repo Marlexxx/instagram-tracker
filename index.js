@@ -19,6 +19,7 @@ const client = new Client({
 const MANAGEMENT_CHANNEL_ID = '1492870240718290964';
 const RECAP_CHANNEL_ID      = '1492880708832858222';
 const DAILY_CHANNEL_ID      = '1492880546785660969';
+const SUBSDAY_CHANNEL_ID    = '1495498715165884660';
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -150,6 +151,30 @@ async function sendDailyRecap() {
   }
 }
 
+// ─── DAILY SUBS COUNT 22H ─────────────────────────────────────────────────────
+
+async function sendDailySubsCount() {
+  try {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    const snap = await db.collection('subscribers')
+      .where('joined_at', '>=', todayStart.toISOString())
+      .get();
+
+    const dateStr = now.toLocaleDateString('fr-FR');
+    const channel = await client.channels.fetch(SUBSDAY_CHANNEL_ID);
+
+    await channel.send({
+      content: `📊 **Subs du ${dateStr}** : **${snap.size}** nouveaux abonnés Telegram aujourd'hui`
+    });
+
+    console.log(`[Daily Count] ✅ ${snap.size} subs envoyé`);
+  } catch (err) {
+    console.error('[Daily Count] ❌ Erreur:', err.message || err);
+  }
+}
+
 // ─── PLANIFICATION 14H ────────────────────────────────────────────────────────
 
 function scheduleDailyRecap() {
@@ -181,6 +206,16 @@ client.on('ready', async () => {
   }
   scheduleDailyRecap();
   startLeaderboardScheduler(client);
+
+  // Schedule daily subs count à 22h
+  const now22 = new Date();
+  const next22 = new Date(now22);
+  next22.setHours(22, 0, 0, 0);
+  if (next22 <= now22) next22.setDate(next22.getDate() + 1);
+  setTimeout(() => {
+    sendDailySubsCount();
+    setInterval(sendDailySubsCount, 24 * 60 * 60 * 1000);
+  }, next22 - now22);
 });
 
 // ─── INTERACTIONS ─────────────────────────────────────────────────────────────
@@ -512,6 +547,10 @@ client.on('messageCreate', async (message) => {
   if (message.content === '!leaderboard') {
     await message.reply('🔄 Mise à jour du leaderboard...');
     await updateLeaderboard(client);
+  }
+  if (message.content === '!subsday') {
+    await message.reply('🔄 Calcul des subs du jour...');
+    await sendDailySubsCount();
   }
 });
 
