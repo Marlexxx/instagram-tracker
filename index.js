@@ -37,12 +37,10 @@ async function getSubsStats(trackingLink, accountId) {
     const now          = new Date();
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-    // 1 lecture : compteurs déjà stockés sur le compte
     const accDoc = await db.collection('instagram_accounts').doc(accountId).get();
     const acc    = accDoc.data();
 
-    // PAS de toLowerCase() — le source est stocké tel quel par le bot Telegram
-    const link     = (trackingLink || '').trim();
+    const link     = (trackingLink || '').toLowerCase().trim();
     const weekSnap = await db.collection('subscribers')
       .where('source', '==', link)
       .where('joined_at', '>=', sevenDaysAgo.toISOString())
@@ -325,7 +323,7 @@ client.on('interactionCreate', async (interaction) => {
           .setCustomId('tracking_link')
           .setLabel('Nom du lien de tracking Telegram')
           .setStyle(TextInputStyle.Short)
-          .setPlaceholder('ex: Insta rslunaax')
+          .setPlaceholder('ex: insta rslunaax')
           .setRequired(true)
       )
     );
@@ -368,7 +366,7 @@ client.on('interactionCreate', async (interaction) => {
     try {
       const va_name       = interaction.fields.getTextInputValue('va_name').trim();
       const insta_name    = interaction.fields.getTextInputValue('insta_name').trim().replace('@', '');
-      const tracking_link = interaction.fields.getTextInputValue('tracking_link').trim();
+      const tracking_link = interaction.fields.getTextInputValue('tracking_link').trim().toLowerCase();
 
       const existing = await db.collection('instagram_accounts').where('insta_name', '==', insta_name).get();
       if (!existing.empty) {
