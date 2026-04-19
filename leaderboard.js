@@ -8,8 +8,10 @@ function getDb() { return admin.firestore(); }
 
 async function computeLeaderboard() {
   const now          = new Date();
+  const todayStart   = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const weekStart    = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   const weekStartISO = weekStart.toISOString();
+  const todayISO     = todayStart.toISOString();
 
   const db           = getDb();
   const accountsSnap = await db.collection('instagram_accounts').get();
@@ -18,28 +20,35 @@ async function computeLeaderboard() {
   const accountStats = [];
 
   for (const acc of accounts) {
-    const link = (acc.tracking_link || '').toLowerCase().trim();
+    // PAS de toLowerCase() — le source dans Firestore est stocké tel quel par le bot Telegram
+    const link = (acc.tracking_link || '').trim();
 
+    // Query 7 derniers jours
     const weekSnap = await db.collection('subscribers')
       .where('source', '==', link)
       .where('joined_at', '>=', weekStartISO)
       .get();
 
+    // Compter les subs d'aujourd'hui depuis les résultats 7j (évite une query en plus)
+    const todayCount = weekSnap.docs.filter(d => {
+      const joinedAt = d.data().joined_at || '';
+      return joinedAt >= todayISO;
+    }).length;
+
     accountStats.push({
       handle:  acc.insta_name || acc.id,
       va_name: acc.va_name    || '—',
-      daily:   acc.subs_today  || 0,
+      daily:   todayCount,
       weekly:  weekSnap.size,
-      total:   acc.subs_total  || 0,
     });
   }
 
+  // Agréger par VA
   const vaMap = {};
   for (const a of accountStats) {
-    if (!vaMap[a.va_name]) vaMap[a.va_name] = { daily: 0, weekly: 0, total: 0 };
+    if (!vaMap[a.va_name]) vaMap[a.va_name] = { daily: 0, weekly: 0 };
     vaMap[a.va_name].daily  += a.daily;
     vaMap[a.va_name].weekly += a.weekly;
-    vaMap[a.va_name].total  += a.total;
   }
   const vaStats = Object.entries(vaMap).map(([name, s]) => ({ name, ...s }));
 
@@ -70,11 +79,11 @@ function vaRowWeekly(va, i) {
 }
 
 function accRow(acc, i) {
-  return `${medal(i)} **${acc.handle}** _· ${acc.va_name}_ — \`${acc.daily}\` subs`;
+  return `${medal(i)} **@${acc.handle}** _· ${acc.va_name}_ — \`${acc.daily}\` subs`;
 }
 
 function accRowWeekly(acc, i) {
-  return `${medal(i)} **${acc.handle}** _· ${acc.va_name}_ — \`${acc.weekly}\` subs`;
+  return `${medal(i)} **@${acc.handle}** _· ${acc.va_name}_ — \`${acc.weekly}\` subs`;
 }
 
 function empty() { return '_Aucune donnée pour l\'instant_'; }
@@ -158,11 +167,30 @@ async function updateLeaderboard(client) {
   }
 }
 
-// ─── SCHEDULER ────────────────────────────────────────────────────────────────
+// ─── SCHEDULER — 8h et 16h uniquement ─────────────────────────────────────────
 
 function startLeaderboardScheduler(client) {
+  // Update immédiate au démarrage
   updateLeaderboard(client);
-  setInterval(() => updateLeaderboard(client), 12 * 60 * 60 * 1000); // toutes les 12h
+
+  // Vérifie toutes les minutes si c'est 8h00 ou 16h00
+  let lastRunHour = -1;
+  setInterval(() => {
+    const now  = new Date();
+    const hour = now.getHours();
+    const min  = now.getMinutes();
+
+    if ((hour === 8 || hour === 16) && min === 0 && lastRunHour !== hour) {
+      lastRunHour = hour;
+      console.log(`[Leaderboard] ⏰ Update planifiée à ${hour}h00`);
+      updateLeaderboard(client);
+    }
+
+    // Reset le guard après l'heure passée
+    if (hour !== 8 && hour !== 16) {
+      lastRunHour = -1;
+    }
+  }, 60 * 1000); // check chaque minute
 }
 
 module.exports = { updateLeaderboard, startLeaderboardScheduler };
