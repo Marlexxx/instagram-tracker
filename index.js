@@ -3,7 +3,9 @@ const admin = require('firebase-admin');
 const { updateLeaderboard, startLeaderboardScheduler } = require('./leaderboard');
 
 const cred = JSON.parse(process.env.FIREBASE_CREDENTIALS);
-admin.initializeApp({ credential: admin.credential.cert(cred) });
+if (!admin.apps.length) {
+  admin.initializeApp({ credential: admin.credential.cert(cred) });
+}
 const db = admin.firestore();
 
 const client = new Client({
