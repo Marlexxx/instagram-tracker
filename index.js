@@ -39,8 +39,8 @@ async function getSubsStats(trackingLink, accountId) {
     const accDoc = await db.collection('instagram_accounts').doc(accountId).get();
     const acc    = accDoc.data();
 
-    // Query filtrée 7j — pas de full scan
-    const link     = (trackingLink || '').toLowerCase().trim();
+    // PAS de toLowerCase() — le source est stocké tel quel par le bot Telegram
+    const link     = (trackingLink || '').trim();
     const weekSnap = await db.collection('subscribers')
       .where('source', '==', link)
       .where('joined_at', '>=', sevenDaysAgo.toISOString())
@@ -323,7 +323,7 @@ client.on('interactionCreate', async (interaction) => {
           .setCustomId('tracking_link')
           .setLabel('Nom du lien de tracking Telegram')
           .setStyle(TextInputStyle.Short)
-          .setPlaceholder('ex: insta VA daniel')
+          .setPlaceholder('ex: Insta rslunaax')
           .setRequired(true)
       )
     );
