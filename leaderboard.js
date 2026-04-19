@@ -20,7 +20,7 @@ async function computeLeaderboard() {
   const accountStats = [];
 
   for (const acc of accounts) {
-    const link = (acc.tracking_link || '').trim();
+    const link = (acc.tracking_link || '').toLowerCase().trim();
 
     // Query 7 derniers jours (utilise l'index composite)
     const weekSnap = await db.collection('subscribers')
