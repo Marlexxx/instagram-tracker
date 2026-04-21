@@ -153,6 +153,17 @@ async function sendDailyRecap() {
 
 // ─── DAILY SUBS COUNT 22H ─────────────────────────────────────────────────────
 
+function categorizeSource(source) {
+  const s = (source || '').toLowerCase().trim();
+  if (s.startsWith('insta ads') || s.startsWith('insta ad'))   return 'Insta Ads';
+  if (s.startsWith('tiktok ads') || s.startsWith('tiktok ad')) return 'TikTok Ads';
+  if (s.startsWith('insta'))   return 'Instagram';
+  if (s.startsWith('tiktok'))  return 'TikTok';
+  if (s.startsWith('twitter')) return 'Twitter';
+  if (s.startsWith('thread'))  return 'Threads';
+  return 'Autre';
+}
+
 async function sendDailySubsCount() {
   try {
     const now = new Date();
@@ -162,13 +173,36 @@ async function sendDailySubsCount() {
       .where('joined_at', '>=', todayStart.toISOString())
       .get();
 
+    // Grouper par source de trafic
+    const bySource = {};
+    snap.docs.forEach(doc => {
+      const cat = categorizeSource(doc.data().source);
+      bySource[cat] = (bySource[cat] || 0) + 1;
+    });
+
     const dateStr = now.toLocaleDateString('fr-FR');
     const channel = await client.channels.fetch(SUBSDAY_CHANNEL_ID);
 
-    await channel.send({
-      content: `📊 **Subs du ${dateStr}** : **${snap.size}** nouveaux abonnés Telegram aujourd'hui`
+    let msg = `📊 **Subs du ${dateStr}** : **${snap.size}** nouveaux abonnés\n\n`;
+
+    const emojis = {
+      'Instagram':  '📸',
+      'TikTok':     '🎵',
+      'Twitter':    '🐦',
+      'Threads':    '🧵',
+      'TikTok Ads': '💰🎵',
+      'Insta Ads':  '💰📸',
+      'Autre':      '❓'
+    };
+
+    const sorted = Object.entries(bySource).sort((a, b) => b[1] - a[1]);
+    sorted.forEach(([source, count]) => {
+      const emoji = emojis[source] || '❓';
+      const pct = ((count / snap.size) * 100).toFixed(1);
+      msg += `${emoji} **${source}** : ${count} subs (${pct}%)\n`;
     });
 
+    await channel.send({ content: msg });
     console.log(`[Daily Count] ✅ ${snap.size} subs envoyé`);
   } catch (err) {
     console.error('[Daily Count] ❌ Erreur:', err.message || err);
